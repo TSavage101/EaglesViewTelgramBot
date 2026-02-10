@@ -12,19 +12,23 @@ https://docs.djangoproject.com/en/5.1/ref/settings/
 
 import os
 from pathlib import Path
+from dotenv import load_dotenv
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+# Load environment variables from .env file
+load_dotenv(BASE_DIR / '.env')
 
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.1/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-nu)6z9$np*2x454ce=s6s^oqvfwsx*%qg(cpi991p$d!!6e=b)'
+SECRET_KEY = os.environ.get('SECRET_KEY', 'django-insecure-fallback-key-change-me')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = os.environ.get('DEBUG', 'True').lower() in ('true', '1', 'yes')
 
 ALLOWED_HOSTS = []
 
@@ -134,9 +138,20 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 # TELEGRAM BOT SETTINGS
 # =============================================================================
 
-TELEGRAM_BOT_TOKEN = os.environ.get(
-    'TELEGRAM_BOT_TOKEN',
-    '8454074773:AAE51-fZyShQ6zzCEssRx_pO_9ZyU-lLus4'
-)
+TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 TELEGRAM_BOT_USERNAME = 'eaglesvieweaglebot'
 
+
+# =============================================================================
+# PAYSTACK SETTINGS
+# =============================================================================
+
+PAYSTACK_SECRET_KEY = os.environ.get('PAYSTACK_SECRET_KEY')
+PAYSTACK_PUBLIC_KEY = os.environ.get('PAYSTACK_PUBLIC_KEY')
+
+# Plan prices in Kobo (100 kobo = ₦1)
+PLAN_PRICES = {
+    'BASIC': 150000,      # ₦1,500
+    'VERIFIED': 300000,   # ₦3,000
+    'PREMIUM': 500000,    # ₦5,000
+}

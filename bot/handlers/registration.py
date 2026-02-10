@@ -1,5 +1,5 @@
 """
-Registration handler - Service provider registration flow
+Registration handler - Service provider registration flow with Paystack payment
 """
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -7,6 +7,7 @@ from telegram.ext import (
     filters, ConversationHandler
 )
 from asgiref.sync import sync_to_async
+from django.conf import settings as django_settings
 
 
 # Conversation states
@@ -21,8 +22,10 @@ from asgiref.sync import sync_to_async
     WAITING_HALL,
     WAITING_CATALOGUE,
     WAITING_PLAN,
+    WAITING_EMAIL,
+    WAITING_PAYMENT,
     CONFIRM_REGISTRATION,
-) = range(11)
+) = range(13)
 
 
 PLAN_INFO = """
@@ -367,7 +370,7 @@ async def receive_plan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     plan = query.data.replace("plan_", "")
     context.user_data['registration']['plan_type'] = plan
     
-    # If premium, ask for hall of residence
+    # If premium, ask for hall of residence first
     if plan == 'PREMIUM':
         await query.edit_message_text(
             "⭐ *PREMIUM PLAN SELECTED*\n\n"
@@ -381,7 +384,8 @@ async def receive_plan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         )
         return WAITING_HALL
     
-    return await show_confirmation(update, context)
+    # For Basic and Verified, skip to email collection
+    return await ask_email(update, context, from_callback=True)
 
 
 async def receive_hall(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -389,7 +393,7 @@ async def receive_hall(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     hall = update.message.text.strip()
     context.user_data['registration']['hall_of_residence'] = hall
     
-    return await show_confirmation_message(update, context)
+    return await ask_email(update, context, from_callback=False)
 
 
 async def skip_hall(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -399,75 +403,98 @@ async def skip_hall(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     
     context.user_data['registration']['hall_of_residence'] = ''
     
-    return await show_confirmation(update, context)
+    return await ask_email(update, context, from_callback=True)
 
 
-async def show_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Show registration confirmation."""
-    query = update.callback_query
-    reg = context.user_data.get('registration', {})
-    
-    plan_prices = {'BASIC': '₦1,500', 'VERIFIED': '₦3,000', 'PREMIUM': '₦5,000'}
-    
-    text = "📋 *REGISTRATION SUMMARY*\n\n"
-    text += f"*Name:* {reg.get('name')}\n"
-    desc = reg.get('description', '')[:100]
-    text += f"*Description:* {desc}...\n"
-    text += f"*Keywords:* {', '.join(reg.get('keywords', []))}\n"
-    text += f"*Category:* {reg.get('category_name')}\n"
-    text += f"*Phone:* {reg.get('phone') or 'Not provided'}\n"
-    text += f"*Telegram:* {reg.get('telegram_handle') or 'Not provided'}\n"
-    text += f"*Instagram:* {reg.get('instagram_handle') or 'Not provided'}\n"
-    text += f"*Catalogue:* {'✅ Uploaded' if reg.get('catalogue_file_id') else '❌ Not uploaded'}\n"
-    text += f"*Plan:* {reg.get('plan_type')} - {plan_prices.get(reg.get('plan_type'), '?')}\n"
-    
-    if reg.get('hall_of_residence'):
-        text += f"*Hall:* {reg.get('hall_of_residence')}\n"
-    
-    text += "\n⚠️ *Please pay to complete registration:*\n"
-    text += "_Payment details will be sent after confirmation._"
-    
-    await query.edit_message_text(
-        text,
-        parse_mode='Markdown',
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ Confirm & Submit", callback_data="confirm_registration")],
-            [InlineKeyboardButton("❌ Cancel", callback_data="cancel_registration")],
-        ])
+async def ask_email(update: Update, context: ContextTypes.DEFAULT_TYPE, from_callback: bool = True) -> int:
+    """Ask the user for their email address (required by Paystack)."""
+    text = (
+        "📧 *EMAIL ADDRESS*\n\n"
+        "Please enter your *email address*.\n"
+        "This is needed for payment processing.\n\n"
+        "_Example: yourname@gmail.com_"
     )
     
-    return CONFIRM_REGISTRATION
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("❌ Cancel", callback_data="cancel_registration")
+    ]])
+    
+    if from_callback:
+        query = update.callback_query
+        await query.edit_message_text(text, parse_mode='Markdown', reply_markup=keyboard)
+    else:
+        await update.message.reply_text(text, parse_mode='Markdown', reply_markup=keyboard)
+    
+    return WAITING_EMAIL
+
+
+async def receive_email(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Receive email and show confirmation summary before payment."""
+    email = update.message.text.strip().lower()
+    
+    # Basic email validation
+    if '@' not in email or '.' not in email.split('@')[-1]:
+        await update.message.reply_text(
+            "❌ That doesn't look like a valid email.\nPlease try again:",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("❌ Cancel", callback_data="cancel_registration")
+            ]])
+        )
+        return WAITING_EMAIL
+    
+    context.user_data['registration']['email'] = email
+    
+    # Show confirmation summary
+    return await show_confirmation_message(update, context)
 
 
 async def show_confirmation_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Show registration confirmation (from message)."""
+    """Show registration confirmation summary before payment."""
     reg = context.user_data.get('registration', {})
     
     plan_prices = {'BASIC': '₦1,500', 'VERIFIED': '₦3,000', 'PREMIUM': '₦5,000'}
     
+    def escape_md(text):
+        """Escape Markdown special characters in user input."""
+        if not text:
+            return text
+        for char in ['_', '*', '`', '[']:
+            text = text.replace(char, f'\\{char}')
+        return text
+    
+    name = escape_md(reg.get('name', ''))
+    desc = escape_md(reg.get('description', '')[:100])
+    keywords = escape_md(', '.join(reg.get('keywords', [])))
+    category = escape_md(reg.get('category_name', ''))
+    phone = escape_md(reg.get('phone')) or 'Not provided'
+    tg_handle = escape_md(reg.get('telegram_handle')) or 'Not provided'
+    ig_handle = escape_md(reg.get('instagram_handle')) or 'Not provided'
+    email = escape_md(reg.get('email', ''))
+    hall = escape_md(reg.get('hall_of_residence', ''))
+    
     text = "📋 *REGISTRATION SUMMARY*\n\n"
-    text += f"*Name:* {reg.get('name')}\n"
-    desc = reg.get('description', '')[:100]
-    text += f"*Description:* {desc}...\n"
-    text += f"*Keywords:* {', '.join(reg.get('keywords', []))}\n"
-    text += f"*Category:* {reg.get('category_name')}\n"
-    text += f"*Phone:* {reg.get('phone') or 'Not provided'}\n"
-    text += f"*Telegram:* {reg.get('telegram_handle') or 'Not provided'}\n"
-    text += f"*Instagram:* {reg.get('instagram_handle') or 'Not provided'}\n"
-    text += f"*Catalogue:* {'✅ Uploaded' if reg.get('catalogue_file_id') else '❌ Not uploaded'}\n"
-    text += f"*Plan:* {reg.get('plan_type')} - {plan_prices.get(reg.get('plan_type'), '?')}\n"
+    text += f"Name: {name}\n"
+    text += f"Description: {desc}\n"
+    text += f"Keywords: {keywords}\n"
+    text += f"Category: {category}\n"
+    text += f"Phone: {phone}\n"
+    text += f"Telegram: {tg_handle}\n"
+    text += f"Instagram: {ig_handle}\n"
+    text += f"Email: {email}\n"
+    text += f"Catalogue: {'✅ Uploaded' if reg.get('catalogue_file_id') else '❌ Not uploaded'}\n"
+    text += f"Plan: {reg.get('plan_type')} - {plan_prices.get(reg.get('plan_type'), '?')}\n"
     
-    if reg.get('hall_of_residence'):
-        text += f"*Hall:* {reg.get('hall_of_residence')}\n"
+    if hall:
+        text += f"Hall: {hall}\n"
     
-    text += "\n⚠️ *Please pay to complete registration:*\n"
-    text += "_Payment details will be sent after confirmation._"
+    text += f"\n💰 *Total: {plan_prices.get(reg.get('plan_type'), '?')}*\n"
+    text += "\nClick Confirm to proceed to payment."
     
     await update.message.reply_text(
         text,
         parse_mode='Markdown',
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ Confirm & Submit", callback_data="confirm_registration")],
+            [InlineKeyboardButton("✅ Confirm & Pay", callback_data="confirm_registration")],
             [InlineKeyboardButton("❌ Cancel", callback_data="cancel_registration")],
         ])
     )
@@ -476,15 +503,15 @@ async def show_confirmation_message(update: Update, context: ContextTypes.DEFAUL
 
 
 async def complete_registration(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Complete the registration and save to database."""
+    """Save the provider to DB and generate Paystack payment link."""
     query = update.callback_query
-    await query.answer("Saving your registration...")
+    await query.answer("Processing...")
     
     reg = context.user_data.get('registration', {})
     user_id = query.from_user.id
     
-    from bot.models import ServiceProvider, Category
-    from django.conf import settings
+    from bot.models import ServiceProvider, Category, Payment
+    from bot.services.paystack import initialize_payment, generate_reference
     import os
     
     @sync_to_async
@@ -504,6 +531,25 @@ async def complete_registration(update: Update, context: ContextTypes.DEFAULT_TY
         provider.save()
         return provider
     
+    @sync_to_async
+    def create_payment(provider, reference, amount, plan, auth_url):
+        payment = Payment.objects.create(
+            provider=provider,
+            reference=reference,
+            amount=amount,
+            plan_type=plan,
+            authorization_url=auth_url,
+        )
+        return payment
+    
+    @sync_to_async
+    def init_payment(email, amount, ref, metadata):
+        return initialize_payment(email, amount, ref, metadata)
+    
+    @sync_to_async
+    def gen_ref():
+        return generate_reference()
+    
     # Check if already registered
     if await check_existing(user_id):
         await query.edit_message_text(
@@ -513,15 +559,14 @@ async def complete_registration(update: Update, context: ContextTypes.DEFAULT_TY
                 InlineKeyboardButton("« Main Menu", callback_data="main_menu")
             ]])
         )
-        context.user_data['expecting_search'] = True  # Re-enable search mode
+        context.user_data['expecting_search'] = True
         return ConversationHandler.END
     
     # Get or create category
     category_name = reg.get('category_name', '').title()
     category = await get_or_create_category(category_name)
     
-    # Create provider
-    from bot.models import ServiceProvider
+    # Create provider (not approved yet)
     provider = ServiceProvider(
         telegram_user_id=user_id,
         name=reg.get('name'),
@@ -533,14 +578,14 @@ async def complete_registration(update: Update, context: ContextTypes.DEFAULT_TY
         telegram_handle=reg.get('telegram_handle', ''),
         instagram_handle=reg.get('instagram_handle', ''),
         hall_of_residence=reg.get('hall_of_residence', ''),
-        is_approved=False,  # Requires admin approval
+        is_approved=False,
     )
     
     # Download and save catalogue if provided
     if reg.get('catalogue_file_id'):
         try:
             file = await context.bot.get_file(reg['catalogue_file_id'])
-            catalogue_dir = os.path.join(settings.MEDIA_ROOT, 'catalogues')
+            catalogue_dir = os.path.join(django_settings.MEDIA_ROOT, 'catalogues')
             os.makedirs(catalogue_dir, exist_ok=True)
             
             filename = f"{user_id}_{reg.get('catalogue_name', 'catalogue.pdf')}"
@@ -553,26 +598,195 @@ async def complete_registration(update: Update, context: ContextTypes.DEFAULT_TY
     
     await save_provider(provider)
     
-    plan_prices = {'BASIC': '₦1,500', 'VERIFIED': '₦3,000', 'PREMIUM': '₦5,000'}
+    # --- PAYSTACK PAYMENT ---
+    plan = reg.get('plan_type', 'BASIC')
+    amount_kobo = django_settings.PLAN_PRICES.get(plan, 150000)
+    reference = await gen_ref()
+    email = reg.get('email', f'{user_id}@eaglesview.bot')
     
-    await query.edit_message_text(
-        "✅ *REGISTRATION SUBMITTED!*\n\n"
-        f"Your {reg.get('plan_type')} registration has been received.\n\n"
-        f"💰 *Amount to pay:* {plan_prices.get(reg.get('plan_type'))}\n\n"
-        "📱 *Payment Instructions:*\n"
-        "Please contact the admin to complete payment and activation.\n\n"
-        "_Your profile will be visible once approved._",
-        parse_mode='Markdown',
-        reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("« Main Menu", callback_data="main_menu")
-        ]])
+    # Initialize Paystack transaction
+    result = await init_payment(
+        email=email,
+        amount=amount_kobo,
+        ref=reference,
+        metadata={
+            "provider_id": provider.id,
+            "provider_name": provider.name,
+            "plan_type": plan,
+            "telegram_user_id": user_id,
+        }
     )
     
-    # Clear registration data and re-enable search
-    context.user_data['registration'] = {}
-    context.user_data['expecting_search'] = True
+    if result.get('success'):
+        auth_url = result['authorization_url']
+        
+        # Save payment record
+        await create_payment(provider, reference, amount_kobo, plan, auth_url)
+        
+        # Store reference for verification
+        context.user_data['payment_reference'] = reference
+        
+        plan_prices = {'BASIC': '₦1,500', 'VERIFIED': '₦3,000', 'PREMIUM': '₦5,000'}
+        
+        await query.edit_message_text(
+            f"✅ *REGISTRATION SAVED!*\n\n"
+            f"💰 *Plan:* {plan} - {plan_prices.get(plan)}\n"
+            f"📧 *Ref:* `{reference}`\n\n"
+            f"👉 *Click the button below to pay:*\n\n"
+            f"After payment, click *'✅ I've Paid'* to verify.",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("💳 Pay Now", url=auth_url)],
+                [InlineKeyboardButton("✅ I've Paid - Verify", callback_data=f"verify_payment_{reference}")],
+                [InlineKeyboardButton("❌ Cancel", callback_data="cancel_registration")],
+            ])
+        )
+        
+        # Clear registration data, re-enable search
+        context.user_data['registration'] = {}
+        context.user_data['expecting_search'] = True
+        
+        return ConversationHandler.END
     
-    return ConversationHandler.END
+    else:
+        # Payment initialization failed — save provider anyway
+        error_msg = result.get('error', 'Unknown error')
+        print(f"Paystack error: {error_msg}")
+        
+        await query.edit_message_text(
+            "⚠️ *REGISTRATION SAVED* but payment link could not be generated.\n\n"
+            f"Error: _{error_msg}_\n\n"
+            "Please contact the admin to arrange payment manually.\n"
+            "Your profile will be activated once payment is confirmed.",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("« Main Menu", callback_data="main_menu")
+            ]])
+        )
+        
+        context.user_data['registration'] = {}
+        context.user_data['expecting_search'] = True
+        
+        return ConversationHandler.END
+
+
+async def verify_payment_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Verify payment via Paystack API when user clicks 'I've Paid'."""
+    query = update.callback_query
+    await query.answer("Verifying payment...")
+    
+    reference = query.data.replace("verify_payment_", "")
+    
+    from bot.models import Payment
+    from bot.services.paystack import verify_payment
+    from django.utils import timezone
+    
+    @sync_to_async
+    def do_verify(ref):
+        return verify_payment(ref)
+    
+    @sync_to_async
+    def get_payment(ref):
+        try:
+            return Payment.objects.select_related('provider').get(reference=ref)
+        except Payment.DoesNotExist:
+            return None
+    
+    @sync_to_async
+    def update_payment_success(payment, paystack_data):
+        payment.status = 'SUCCESS'
+        payment.paystack_response = paystack_data
+        payment.verified_at = timezone.now()
+        payment.save()
+        # Also mark provider as paid (but still needs admin approval)
+        provider = payment.provider
+        provider.save()
+    
+    @sync_to_async
+    def update_payment_failed(payment, paystack_data):
+        payment.status = 'FAILED'
+        payment.paystack_response = paystack_data
+        payment.save()
+    
+    # Get payment record
+    payment = await get_payment(reference)
+    
+    if not payment:
+        await query.edit_message_text(
+            "❌ Payment record not found.\nPlease contact admin.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("« Main Menu", callback_data="main_menu")
+            ]])
+        )
+        return
+    
+    # Already verified?
+    if payment.status == 'SUCCESS':
+        await query.edit_message_text(
+            "✅ *Payment already verified!*\n\n"
+            "Your profile is pending admin approval.\n"
+            "You'll be visible in search once approved! 🎉",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("« Main Menu", callback_data="main_menu")
+            ]])
+        )
+        return
+    
+    # Verify with Paystack
+    result = await do_verify(reference)
+    
+    if result.get('success') and result.get('status') == 'success':
+        # Payment confirmed!
+        await update_payment_success(payment, result.get('data'))
+        
+        await query.edit_message_text(
+            "✅ *PAYMENT VERIFIED!* 🎉\n\n"
+            f"💰 Amount: ₦{payment.amount_naira:,.0f}\n"
+            f"📧 Ref: `{reference}`\n\n"
+            "Your profile is now *pending admin approval*.\n"
+            "Once approved, you'll appear in Purple Board search!\n\n"
+            "_Thank you for choosing Eagles View!_ 🦅",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("« Main Menu", callback_data="main_menu")
+            ]])
+        )
+    
+    elif result.get('success') and result.get('status') in ('abandoned', 'failed'):
+        await update_payment_failed(payment, result.get('data'))
+        
+        # Regenerate payment link
+        auth_url = payment.authorization_url
+        
+        await query.edit_message_text(
+            "❌ *Payment not completed yet.*\n\n"
+            "It seems the payment was not successful or was abandoned.\n"
+            "Please try again:",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("💳 Try Again", url=auth_url)],
+                [InlineKeyboardButton("✅ I've Paid - Verify", callback_data=f"verify_payment_{reference}")],
+                [InlineKeyboardButton("« Main Menu", callback_data="main_menu")],
+            ])
+        )
+    
+    else:
+        # Payment still pending or error
+        auth_url = payment.authorization_url
+        
+        await query.edit_message_text(
+            "⏳ *Payment still pending...*\n\n"
+            "We couldn't confirm your payment yet.\n"
+            "If you haven't paid, click 'Pay Now'.\n"
+            "If you just paid, wait a moment and try verifying again.",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("💳 Pay Now", url=auth_url)],
+                [InlineKeyboardButton("✅ Verify Again", callback_data=f"verify_payment_{reference}")],
+                [InlineKeyboardButton("« Main Menu", callback_data="main_menu")],
+            ])
+        )
 
 
 async def cancel_registration(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -633,6 +847,9 @@ def get_registration_handler():
                 MessageHandler(filters.TEXT & ~filters.COMMAND, receive_hall),
                 CallbackQueryHandler(skip_hall, pattern="^skip_hall$"),
             ],
+            WAITING_EMAIL: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_email),
+            ],
             CONFIRM_REGISTRATION: [
                 CallbackQueryHandler(complete_registration, pattern="^confirm_registration$"),
             ],
@@ -643,3 +860,8 @@ def get_registration_handler():
         allow_reentry=True,
         per_message=False,
     )
+
+
+def get_payment_verification_handler():
+    """Return the handler for verifying payments (outside conversation)."""
+    return CallbackQueryHandler(verify_payment_handler, pattern=r"^verify_payment_")

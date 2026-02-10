@@ -17,7 +17,7 @@ from bot.handlers.home import get_home_handlers
 from bot.handlers.news import get_news_handlers
 from bot.handlers.purple_board import get_purple_board_handlers
 from bot.handlers.chancellors import get_chancellors_handlers
-from bot.handlers.registration import get_registration_handler
+from bot.handlers.registration import get_registration_handler, get_payment_verification_handler
 
 
 def create_application() -> Application:
@@ -42,6 +42,9 @@ def create_application() -> Application:
     # Add handlers
     # Registration conversation handler must be added first (before purple board's message handler)
     application.add_handler(get_registration_handler())
+    
+    # Payment verification handler (outside conversation, handles "I've Paid" button)
+    application.add_handler(get_payment_verification_handler())
     
     # Add start handlers
     for handler in get_start_handlers():

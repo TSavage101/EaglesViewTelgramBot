@@ -46,11 +46,24 @@ async def main_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     query = update.callback_query
     await query.answer()
     
-    await query.edit_message_text(
-        MAIN_MENU_TEXT,
-        parse_mode='Markdown',
-        reply_markup=get_main_menu_keyboard()
-    )
+    try:
+        await query.edit_message_text(
+            MAIN_MENU_TEXT,
+            parse_mode='Markdown',
+            reply_markup=get_main_menu_keyboard()
+        )
+    except Exception:
+        # Can't edit media messages (photos/videos) — delete and send new
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text=MAIN_MENU_TEXT,
+            parse_mode='Markdown',
+            reply_markup=get_main_menu_keyboard()
+        )
 
 
 def get_start_handlers():

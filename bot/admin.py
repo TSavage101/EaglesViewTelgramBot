@@ -2,7 +2,8 @@ from django.contrib import admin
 from django.utils.html import format_html
 from .models import (
     Category, ServiceProvider, News, Advertisement,
-    Fixture, Result, FantasyLeaderboard, Announcement
+    Fixture, Result, FantasyLeaderboard, Announcement,
+    Payment
 )
 
 
@@ -152,3 +153,17 @@ class AnnouncementAdmin(admin.ModelAdmin):
     list_filter = ['is_pinned', 'created_at']
     list_editable = ['is_pinned']
     search_fields = ['title', 'content']
+
+
+@admin.register(Payment)
+class PaymentAdmin(admin.ModelAdmin):
+    list_display = ['reference', 'provider', 'plan_type', 'display_amount', 'status', 'created_at', 'verified_at']
+    list_filter = ['status', 'plan_type', 'created_at']
+    search_fields = ['reference', 'provider__name']
+    readonly_fields = ['reference', 'provider', 'amount', 'plan_type', 'authorization_url', 
+                       'paystack_response', 'created_at', 'verified_at']
+    date_hierarchy = 'created_at'
+
+    def display_amount(self, obj):
+        return f"₦{obj.amount_naira:,.0f}"
+    display_amount.short_description = 'Amount'

@@ -258,3 +258,42 @@ class Announcement(models.Model):
 
     def __str__(self):
         return self.title
+
+
+# ============ PAYMENT MODEL ============
+
+class Payment(models.Model):
+    """
+    Tracks Paystack payment transactions for provider registrations.
+    """
+    PAYMENT_STATUS = [
+        ('PENDING', 'Pending'),
+        ('SUCCESS', 'Success'),
+        ('FAILED', 'Failed'),
+        ('ABANDONED', 'Abandoned'),
+    ]
+
+    provider = models.ForeignKey(
+        ServiceProvider,
+        on_delete=models.CASCADE,
+        related_name='payments'
+    )
+    reference = models.CharField(max_length=100, unique=True)
+    amount = models.IntegerField(help_text="Amount in kobo")
+    plan_type = models.CharField(max_length=10, choices=ServiceProvider.PLAN_CHOICES)
+    status = models.CharField(max_length=10, choices=PAYMENT_STATUS, default='PENDING')
+    authorization_url = models.URLField(blank=True)
+    paystack_response = models.JSONField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    verified_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.reference} - {self.provider.name} - {self.get_status_display()}"
+
+    @property
+    def amount_naira(self):
+        """Return amount in Naira."""
+        return self.amount / 100

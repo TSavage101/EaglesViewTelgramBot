@@ -13,6 +13,16 @@ import os
 RESULTS_PER_PAGE = 5
 
 
+def escape_md(text):
+    """Escape Markdown special characters in user input."""
+    if not text:
+        return text
+    text = str(text)
+    for char in ['_', '*', '`', '[']:
+        text = text.replace(char, f'\\{char}')
+    return text
+
+
 async def purple_board_section(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle Purple Board section."""
     query = update.callback_query
@@ -161,8 +171,8 @@ async def show_search_results(update: Update, context: ContextTypes.DEFAULT_TYPE
     total_count = len(result_ids)
     total_pages = (total_count + RESULTS_PER_PAGE - 1) // RESULTS_PER_PAGE
     
-    text = f"🔍 *Results for '{query_text}'*\n"
-    text += f"_{total_count} provider(s) found_\n\n"
+    text = f"🔍 Results for '{escape_md(query_text)}'\n"
+    text += f"{total_count} provider(s) found\n\n"
     
     keyboard = []
     
@@ -170,8 +180,9 @@ async def show_search_results(update: Update, context: ContextTypes.DEFAULT_TYPE
         badge = provider.get_display_badge()
         badge_str = f" {badge}" if badge else ""
         
-        desc = provider.description[:80] + "..." if len(provider.description) > 80 else provider.description
-        text += f"*{provider.name}*{badge_str}\n"
+        name = escape_md(provider.name)
+        desc = escape_md(provider.description[:80])
+        text += f"{name}{badge_str}\n"
         text += f"📝 {desc}\n\n"
         
         name_short = provider.name[:20] + "..." if len(provider.name) > 20 else provider.name
@@ -269,17 +280,35 @@ async def view_provider(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
         return
     
-    # Build contact card
-    text = provider.get_contact_card()
+    # Build contact card (escape special markdown chars)
+    name = escape_md(provider.name)
+    badge = provider.get_display_badge()
+    desc = escape_md(provider.description)
+    
+    lines = [f"📋 {name}"]
+    if badge:
+        lines[0] += f" {badge}"
+    lines.append(f"\n📝 {desc}")
+    
+    if provider.phone:
+        lines.append(f"📞 {escape_md(provider.phone)}")
+    if provider.telegram_handle:
+        lines.append(f"💬 {escape_md(provider.telegram_handle)}")
+    if provider.instagram_handle:
+        lines.append(f"📸 {escape_md(provider.instagram_handle)}")
+    if provider.plan_type == 'PREMIUM' and provider.hall_of_residence:
+        lines.append(f"🏠 {escape_md(provider.hall_of_residence)}")
+    
+    text = "\n".join(lines)
     
     # Add keywords
     if provider.keywords:
         keywords = provider.keywords if isinstance(provider.keywords, list) else [provider.keywords]
-        text += f"\n\n🏷️ *Keywords:* {', '.join(str(k) for k in keywords)}"
+        text += f"\n\n🏷️ Keywords: {escape_md(', '.join(str(k) for k in keywords))}"
     
     # Add category
     if provider.category:
-        text += f"\n📁 *Category:* {provider.category.name}"
+        text += f"\n📁 Category: {escape_md(provider.category.name)}"
     
     keyboard = []
     
@@ -296,9 +325,6 @@ async def view_provider(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if contact_row:
         keyboard.append(contact_row)
     
-    if provider.phone:
-        keyboard.append([InlineKeyboardButton(f"📞 Call {provider.phone}", url=f"tel:{provider.phone}")])
-    
     # Catalogue button
     if provider.catalogue:
         keyboard.append([InlineKeyboardButton("📄 View Catalogue", callback_data=f"catalogue_{provider.id}")])
@@ -311,7 +337,6 @@ async def view_provider(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     try:
         await query.edit_message_text(
             text,
-            parse_mode='Markdown',
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
     except:
@@ -319,7 +344,6 @@ async def view_provider(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await context.bot.send_message(
             chat_id=query.message.chat_id,
             text=text,
-            parse_mode='Markdown',
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
 
