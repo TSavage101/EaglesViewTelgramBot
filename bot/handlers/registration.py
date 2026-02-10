@@ -584,15 +584,23 @@ async def complete_registration(update: Update, context: ContextTypes.DEFAULT_TY
     # Download and save catalogue if provided
     if reg.get('catalogue_file_id'):
         try:
+            from django.core.files.base import ContentFile
+            import tempfile
+            
             file = await context.bot.get_file(reg['catalogue_file_id'])
-            catalogue_dir = os.path.join(django_settings.MEDIA_ROOT, 'catalogues')
-            os.makedirs(catalogue_dir, exist_ok=True)
-            
             filename = f"{user_id}_{reg.get('catalogue_name', 'catalogue.pdf')}"
-            filepath = os.path.join(catalogue_dir, filename)
             
-            await file.download_to_drive(filepath)
-            provider.catalogue = f"catalogues/{filename}"
+            # Download to a temp file first
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp:
+                await file.download_to_drive(tmp.name)
+                tmp_path = tmp.name
+            
+            # Save via Django's storage (works with Cloudinary or local)
+            with open(tmp_path, 'rb') as f:
+                provider.catalogue.save(filename, ContentFile(f.read()), save=False)
+            
+            # Clean up temp file
+            os.remove(tmp_path)
         except Exception as e:
             print(f"Error saving catalogue: {e}")
     

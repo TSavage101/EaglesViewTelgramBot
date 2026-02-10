@@ -370,16 +370,26 @@ async def view_catalogue(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
     
     if provider.catalogue:
-        catalogue_path = os.path.join(settings.MEDIA_ROOT, str(provider.catalogue))
-        if os.path.exists(catalogue_path):
-            with open(catalogue_path, 'rb') as doc:
-                await context.bot.send_document(
-                    chat_id=query.message.chat_id,
-                    document=doc,
-                    filename=f"{provider.name}_catalogue.pdf",
-                    caption=f"📄 Catalogue for *{provider.name}*",
-                    parse_mode='Markdown'
-                )
+        try:
+            # Try using the URL (works with Cloudinary)
+            catalogue_url = provider.catalogue.url
+            await context.bot.send_document(
+                chat_id=query.message.chat_id,
+                document=catalogue_url,
+                filename=f"{provider.name}_catalogue.pdf",
+                caption=f"📄 Catalogue for {escape_md(provider.name)}",
+            )
+        except Exception:
+            # Fallback: try local file path
+            catalogue_path = os.path.join(settings.MEDIA_ROOT, str(provider.catalogue))
+            if os.path.exists(catalogue_path):
+                with open(catalogue_path, 'rb') as doc:
+                    await context.bot.send_document(
+                        chat_id=query.message.chat_id,
+                        document=doc,
+                        filename=f"{provider.name}_catalogue.pdf",
+                        caption=f"📄 Catalogue for {escape_md(provider.name)}",
+                    )
 
 
 async def browse_category(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
